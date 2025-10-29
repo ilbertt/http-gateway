@@ -194,6 +194,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89e25b6adfb930f02d1981565a6e5d9c547ac15a96606256d3b59040e5cd4ca3"
 
 [[package]]
+name = "bhttp"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a23039ff1530c05a237757cb6b830f7941b8a12aacc58ae48e888d2c8d69a133"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "binread"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1563,6 +1572,8 @@ name = "ic-http-gateway"
 version = "0.3.0"
 dependencies = [
  "assert_matches",
+ "base64 0.22.1",
+ "bhttp",
  "bytes",
  "candid",
  "futures",
@@ -1577,6 +1588,8 @@ dependencies = [
  "rand_chacha 0.3.1",
  "reqwest",
  "rstest",
+ "serde",
+ "serde_json",
  "sha2 0.10.8",
  "testcontainers",
  "thiserror 1.0.69",
