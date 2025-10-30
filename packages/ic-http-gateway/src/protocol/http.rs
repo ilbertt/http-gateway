@@ -82,11 +82,11 @@ pub fn has_auth_headers(request: &CanisterRequest) -> bool {
 fn extract_structured_field_base64(header_value: &str) -> Result<Vec<u8>, HttpProcessingError> {
     // Expected format: "sig=:base64value:"
     let value = header_value
-        .strip_prefix("sig=:")
+        .strip_prefix("sig_call=:")
         .and_then(|s| s.strip_suffix(':'))
         .ok_or_else(|| {
             HttpProcessingError::InvalidHeaderValue(format!(
-                "Expected format 'sig=:value:', got: {}",
+                "Expected format 'sig_call=:value:', got: {}",
                 header_value
             ))
         })?;
@@ -96,12 +96,12 @@ fn extract_structured_field_base64(header_value: &str) -> Result<Vec<u8>, HttpPr
         .map_err(|e| HttpProcessingError::Base64DecodeError(e.to_string()))
 }
 
-/// Helper function to extract value from structured field format: "sig=value"
+/// Helper function to extract value from structured field format: "sig_call=value"
 fn extract_structured_field_value(header_value: &str) -> Result<&str, HttpProcessingError> {
-    // Expected format: "sig=value"
-    header_value.strip_prefix("sig=").ok_or_else(|| {
+    // Expected format: "sig_call=value"
+    header_value.strip_prefix("sig_call=").ok_or_else(|| {
         HttpProcessingError::InvalidHeaderValue(format!(
-            "Expected format 'sig=value', got: {}",
+            "Expected format 'sig_call=value', got: {}",
             header_value
         ))
     })
