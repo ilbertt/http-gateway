@@ -14,6 +14,8 @@ pub const SIGNATURE: &str = "signature";
 pub const SIGNATURE_INPUT: &str = "signature-input";
 pub const SIGNATURE_KEY: &str = "signature-key";
 
+const IC_INCLUDE_HEADERS_SEPARATOR: char = ',';
+
 /// Errors that can occur during HTTP processing
 #[derive(Debug)]
 pub enum HttpProcessingError {
@@ -114,7 +116,7 @@ pub fn parse_auth_headers(request: &CanisterRequest) -> Result<AuthHeaders, Http
         .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?;
 
     let include_headers: Vec<String> = include_headers_str
-        .split(';')
+        .split(IC_INCLUDE_HEADERS_SEPARATOR)
         .map(|s| s.trim().to_lowercase())
         .collect();
 
