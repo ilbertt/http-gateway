@@ -15,6 +15,8 @@ pub const SIGNATURE_INPUT: &str = "signature-input";
 pub const SIGNATURE_KEY: &str = "signature-key";
 
 const IC_INCLUDE_HEADERS_SEPARATOR: char = ',';
+const SIGNATURE_INPUT_SEPARATOR: char = ';';
+const SIGNATURE_INPUT_KEY_VALUE_SEPARATOR: char = '=';
 
 /// Errors that can occur during HTTP processing
 #[derive(Debug)]
@@ -163,9 +165,9 @@ pub fn parse_auth_headers(request: &CanisterRequest) -> Result<AuthHeaders, Http
     let mut ingress_expiry: Option<u64> = None;
     let mut nonce: Option<Vec<u8>> = None;
 
-    for pair in signature_input_str.split(';') {
+    for pair in signature_input_str.split(SIGNATURE_INPUT_SEPARATOR) {
         let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once('=') {
+        if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
             let key = key.trim();
             let value = value.trim();
 
