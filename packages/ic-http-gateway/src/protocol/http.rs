@@ -1,25 +1,22 @@
+use crate::protocol::signature::{
+    SignatureData, SIGNATURE_HEADER_NAME, SIGNATURE_INPUT_HEADER_NAME, SIGNATURE_KEY_HEADER_NAME,
+};
 use crate::{CanisterRequest, CanisterResponse, HttpGatewayResponseBody};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64, Engine};
 use candid::Principal;
 use http::{HeaderName, HeaderValue, Response, StatusCode};
 use http_body_util::Full;
 use ic_agent::agent::{Envelope, EnvelopeContent};
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::Cursor;
 
 /// Custom header names used in the protocol
 pub const IC_INCLUDE_HEADERS: &str = "x-ic-include-headers";
-pub const SIGNATURE: &str = "signature";
-pub const SIGNATURE_INPUT: &str = "signature-input";
-pub const SIGNATURE_KEY: &str = "signature-key";
 
 const IC_INCLUDE_HEADERS_SEPARATOR: char = ',';
-const SIGNATURE_INPUT_SEPARATOR: char = ';';
-const SIGNATURE_INPUT_KEY_VALUE_SEPARATOR: char = '=';
 
 /// Errors that can occur during HTTP processing
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum HttpProcessingError {
     MissingHeader(&'static str),
     InvalidHeaderValue(String),
@@ -44,72 +41,18 @@ impl std::fmt::Display for HttpProcessingError {
 
 impl std::error::Error for HttpProcessingError {}
 
-/// The signature key structure from the client
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SignatureKey {
-    #[serde(rename = "pubKey")]
-    pub pub_key: String,
-}
-
-/// Parsed authentication headers from the incoming request
-#[derive(Debug)]
-pub struct AuthHeaders {
-    pub sender_sig: Vec<u8>,
-    pub sender_pubkey: Vec<u8>,
-    pub signature_input: SignatureInputData,
-    pub include_headers: Vec<String>,
-}
-
-/// Parsed signature input data
-#[derive(Debug)]
-pub struct SignatureInputData {
-    pub canister_id: Principal,
-    pub method_name: String,
-    pub sender: Principal,
-    pub ingress_expiry: u64,
-    pub nonce: Option<Vec<u8>>,
-}
-
 /// Check if the request has authentication headers
 pub fn has_auth_headers(request: &CanisterRequest) -> bool {
-    request.headers().contains_key(SIGNATURE)
-        && request.headers().contains_key(SIGNATURE_INPUT)
-        && request.headers().contains_key(SIGNATURE_KEY)
+    request.headers().contains_key(SIGNATURE_HEADER_NAME)
+        && request.headers().contains_key(SIGNATURE_INPUT_HEADER_NAME)
+        && request.headers().contains_key(SIGNATURE_KEY_HEADER_NAME)
         && request.headers().contains_key(IC_INCLUDE_HEADERS)
 }
 
-/// Helper function to extract base64 value from structured field format: "sig=:base64value:"
-fn extract_structured_field_base64(header_value: &str) -> Result<Vec<u8>, HttpProcessingError> {
-    // Expected format: "sig=:base64value:"
-    let value = header_value
-        .strip_prefix("sig_call=:")
-        .and_then(|s| s.strip_suffix(':'))
-        .ok_or_else(|| {
-            HttpProcessingError::InvalidHeaderValue(format!(
-                "Expected format 'sig_call=:value:', got: {}",
-                header_value
-            ))
-        })?;
-
-    BASE64
-        .decode(value)
-        .map_err(|e| HttpProcessingError::Base64DecodeError(e.to_string()))
-}
-
-/// Helper function to extract value from structured field format: "sig_call=value"
-fn extract_structured_field_value(header_value: &str) -> Result<&str, HttpProcessingError> {
-    // Expected format: "sig_call=value"
-    header_value.strip_prefix("sig_call=").ok_or_else(|| {
-        HttpProcessingError::InvalidHeaderValue(format!(
-            "Expected format 'sig_call=value', got: {}",
-            header_value
-        ))
-    })
-}
-
-/// Parse authentication headers from the incoming HTTP request
-pub fn parse_auth_headers(request: &CanisterRequest) -> Result<AuthHeaders, HttpProcessingError> {
-    // Parse IC-Include-Headers
+/// Parse the IC-Include-Headers header value
+pub fn parse_include_headers(
+    request: &CanisterRequest,
+) -> Result<Vec<String>, HttpProcessingError> {
     let include_headers_str = request
         .headers()
         .get(IC_INCLUDE_HEADERS)
@@ -117,125 +60,10 @@ pub fn parse_auth_headers(request: &CanisterRequest) -> Result<AuthHeaders, Http
         .to_str()
         .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?;
 
-    let include_headers: Vec<String> = include_headers_str
+    Ok(include_headers_str
         .split(IC_INCLUDE_HEADERS_SEPARATOR)
         .map(|s| s.trim().to_lowercase())
-        .collect();
-
-    // Parse Signature header: format is "sig=:base64signature:"
-    let signature_str = request
-        .headers()
-        .get(SIGNATURE)
-        .ok_or(HttpProcessingError::MissingHeader(SIGNATURE))?
-        .to_str()
-        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?;
-
-    let sender_sig = extract_structured_field_base64(signature_str)?;
-
-    // Parse Signature-Key header: format is "sig=:base64json:"
-    let signature_key_str = request
-        .headers()
-        .get(SIGNATURE_KEY)
-        .ok_or(HttpProcessingError::MissingHeader(SIGNATURE_KEY))?
-        .to_str()
-        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?;
-
-    let signature_key_json = extract_structured_field_base64(signature_key_str)?;
-
-    let signature_key: SignatureKey = serde_json::from_slice(&signature_key_json)
-        .map_err(|e| HttpProcessingError::JsonParseError(e.to_string()))?;
-
-    let sender_pubkey = BASE64
-        .decode(&signature_key.pub_key)
-        .map_err(|e| HttpProcessingError::Base64DecodeError(e.to_string()))?;
-
-    // Parse Signature-Input header: format is "sig=semicolon-separated-pairs"
-    let signature_input_header = request
-        .headers()
-        .get(SIGNATURE_INPUT)
-        .ok_or(HttpProcessingError::MissingHeader(SIGNATURE_INPUT))?
-        .to_str()
-        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?;
-
-    let signature_input_str = extract_structured_field_value(signature_input_header)?;
-
-    let mut canister_id: Option<Principal> = None;
-    let mut method_name: Option<String> = None;
-    let mut sender: Option<Principal> = None;
-    let mut ingress_expiry: Option<u64> = None;
-    let mut nonce: Option<Vec<u8>> = None;
-
-    for pair in signature_input_str.split(SIGNATURE_INPUT_SEPARATOR) {
-        let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
-            let key = key.trim();
-            let value = value.trim();
-
-            match key {
-                "canister_id" => {
-                    canister_id = Some(
-                        Principal::from_text(value)
-                            .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?,
-                    );
-                }
-                "method_name" => {
-                    method_name = Some(value.to_string());
-                }
-                "sender" => {
-                    sender = Some(
-                        Principal::from_text(value)
-                            .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?,
-                    );
-                }
-                "ingress_expiry" => {
-                    ingress_expiry = Some(
-                        value
-                            .parse::<u64>()
-                            .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?,
-                    );
-                }
-                "nonce" => {
-                    // Nonce might be sent as base64 or as a number
-                    nonce = Some(
-                        BASE64
-                            .decode(value)
-                            .or_else(|_| {
-                                // If not base64, try parsing as a number
-                                value
-                                    .parse::<u64>()
-                                    .map(|n| n.to_be_bytes().to_vec())
-                                    .map_err(|_| base64::DecodeError::InvalidLength(value.len()))
-                            })
-                            .map_err(|e| HttpProcessingError::Base64DecodeError(e.to_string()))?,
-                    );
-                }
-                _ => {} // Ignore unknown fields
-            }
-        }
-    }
-
-    let signature_input = SignatureInputData {
-        canister_id: canister_id.ok_or(HttpProcessingError::MissingHeader(
-            "canister_id in signature-input",
-        ))?,
-        method_name: method_name.ok_or(HttpProcessingError::MissingHeader(
-            "method_name in signature-input",
-        ))?,
-        sender: sender.ok_or(HttpProcessingError::MissingHeader(
-            "sender in signature-input",
-        ))?,
-        ingress_expiry: ingress_expiry.ok_or(HttpProcessingError::MissingHeader(
-            "ingress_expiry in signature-input",
-        ))?,
-        nonce,
-    };
-
-    Ok(AuthHeaders {
-        sender_sig,
-        sender_pubkey,
-        signature_input,
-        include_headers,
-    })
+        .collect())
 }
 
 /// Convert HTTP request to binary representation using bhttp (for non-authenticated requests, includes all headers)
@@ -359,24 +187,24 @@ pub fn binary_to_http_response(binary: &[u8]) -> Result<CanisterResponse, HttpPr
 
 /// Construct the CBOR-encoded envelope for authenticated requests
 pub fn construct_authenticated_envelope(
-    auth_headers: &AuthHeaders,
+    signature_data: &SignatureData,
     binary_request: Vec<u8>,
 ) -> Result<Vec<u8>, HttpProcessingError> {
     // Create the EnvelopeContent::Call variant
     let content = EnvelopeContent::Call {
-        nonce: auth_headers.signature_input.nonce.clone(),
-        ingress_expiry: auth_headers.signature_input.ingress_expiry,
-        sender: auth_headers.signature_input.sender,
-        canister_id: auth_headers.signature_input.canister_id,
-        method_name: auth_headers.signature_input.method_name.clone(),
+        nonce: signature_data.signature_input.nonce.clone(),
+        ingress_expiry: signature_data.signature_input.ingress_expiry,
+        sender: signature_data.signature_input.sender,
+        canister_id: signature_data.signature_input.canister_id,
+        method_name: signature_data.signature_input.method_name.clone(),
         arg: binary_request,
     };
 
     // Create the Envelope with signature
     let envelope = Envelope {
         content: Cow::Owned(content),
-        sender_pubkey: Some(auth_headers.sender_pubkey.clone()),
-        sender_sig: Some(auth_headers.sender_sig.clone()),
+        sender_pubkey: Some(signature_data.sender_pubkey.clone()),
+        sender_sig: Some(signature_data.sender_sig.clone()),
         sender_delegation: None, // TODO: Support delegation chains from Internet Identity
     };
 

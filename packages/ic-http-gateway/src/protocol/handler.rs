@@ -2,8 +2,9 @@ use crate::protocol::canister::HttpRequestCanister;
 use crate::protocol::http::{
     binary_to_http_response, construct_authenticated_envelope, construct_query_envelope,
     has_auth_headers, http_request_to_binary, http_request_to_binary_all_headers,
-    parse_auth_headers,
+    parse_include_headers,
 };
+use crate::protocol::signature::Signature;
 use crate::{
     CanisterRequest, CanisterResponse, HttpGatewayResponse, HttpGatewayResponseBody,
     HttpGatewayResponseMetadata,
@@ -48,14 +49,32 @@ async fn process_authenticated_request(
     canister: &HttpRequestCanister<'_>,
     request: CanisterRequest,
 ) -> HttpGatewayResponse {
-    // Parse authentication headers and filter headers
-    let auth_headers = match parse_auth_headers(&request) {
+    // Parse signatures from headers
+    let signature = match Signature::from_headers(request.headers()) {
+        Ok(sig) => sig,
+        Err(e) => {
+            return HttpGatewayResponse {
+                canister_response: create_err_response(
+                    StatusCode::BAD_REQUEST,
+                    &format!("Failed to parse signatures: {}", e),
+                ),
+                metadata: HttpGatewayResponseMetadata {
+                    upgraded_to_update_call: false,
+                    response_verification_version: None,
+                    internal_error: None,
+                },
+            };
+        }
+    };
+
+    // Parse include headers
+    let include_headers = match parse_include_headers(&request) {
         Ok(headers) => headers,
         Err(e) => {
             return HttpGatewayResponse {
                 canister_response: create_err_response(
                     StatusCode::BAD_REQUEST,
-                    &format!("Failed to parse authentication headers: {}", e),
+                    &format!("Failed to parse include headers: {}", e),
                 ),
                 metadata: HttpGatewayResponseMetadata {
                     upgraded_to_update_call: false,
@@ -67,7 +86,7 @@ async fn process_authenticated_request(
     };
 
     // Convert filtered HTTP request to binary representation
-    let binary_request = match http_request_to_binary(&request, &auth_headers.include_headers) {
+    let binary_request = match http_request_to_binary(&request, &include_headers) {
         Ok(binary) => binary,
         Err(e) => {
             return HttpGatewayResponse {
@@ -84,8 +103,11 @@ async fn process_authenticated_request(
         }
     };
 
+    // Get the primary signature data (call signature for Call variant, query for Query variant)
+    let signature_data = signature.primary();
+
     // Construct the authenticated envelope with signature information
-    let envelope_bytes = match construct_authenticated_envelope(&auth_headers, binary_request) {
+    let envelope_bytes = match construct_authenticated_envelope(signature_data, binary_request) {
         Ok(bytes) => bytes,
         Err(e) => {
             return HttpGatewayResponse {

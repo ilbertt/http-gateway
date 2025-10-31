@@ -1,5 +1,6 @@
 mod canister;
 mod http;
+mod signature;
 
 mod handler;
 pub(crate) use handler::*;
