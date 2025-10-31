@@ -50,12 +50,261 @@ struct SignatureKey {
 
 /// Parsed signature input data
 #[derive(Debug, Clone)]
-pub struct SignatureInputData {
-    pub canister_id: Principal,
-    pub method_name: String,
-    pub sender: Principal,
-    pub ingress_expiry: u64,
-    pub nonce: Option<Vec<u8>>,
+pub enum SignatureInputData {
+    Call {
+        canister_id: Principal,
+        method_name: String,
+        sender: Principal,
+        ingress_expiry: u64,
+        nonce: Option<Vec<u8>>,
+    },
+    ReadState {
+        ingress_expiry: u64,
+        sender: Principal,
+        #[allow(dead_code)]
+        nonce: Option<Vec<u8>>, // Not used in the read_state envelope
+    },
+    Query {
+        canister_id: Principal,
+        method_name: String,
+        sender: Principal,
+        ingress_expiry: u64,
+        nonce: Option<Vec<u8>>,
+    },
+}
+
+impl SignatureInputData {
+    pub fn call_from_str(value: &str) -> Result<Self, SignatureParseError> {
+        let mut canister_id = None;
+        let mut method_name = None;
+        let mut sender = None;
+        let mut ingress_expiry = None;
+        let mut nonce = None;
+
+        for pair in value.split(SIGNATURE_INPUTS_SEPARATOR) {
+            let pair = pair.trim();
+            if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
+                let key = key.trim();
+                let value = value.trim();
+
+                match key {
+                    "request_type" => {
+                        if value != "call" {
+                            return Err(SignatureParseError::InvalidHeaderValue(
+                                "request_type must be 'call'".to_string(),
+                            ));
+                        }
+                    }
+                    "canister_id" => {
+                        canister_id =
+                            Some(Principal::from_text(value).map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "method_name" => {
+                        method_name = Some(value.to_string());
+                    }
+                    "sender" => {
+                        sender =
+                            Some(Principal::from_text(value).map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "ingress_expiry" => {
+                        ingress_expiry =
+                            Some(value.parse::<u64>().map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "nonce" => {
+                        nonce = Some(
+                            BASE64
+                                .decode(value)
+                                .or_else(|_| {
+                                    value
+                                        .parse::<u64>()
+                                        .map(|n| n.to_be_bytes().to_vec())
+                                        .map_err(|_| {
+                                            base64::DecodeError::InvalidLength(value.len())
+                                        })
+                                })
+                                .map_err(|e| {
+                                    SignatureParseError::Base64DecodeError(e.to_string())
+                                })?,
+                        );
+                    }
+                    _ => {} // Ignore unknown fields
+                }
+            }
+        }
+
+        let signature_input = SignatureInputData::Call {
+            canister_id: canister_id.ok_or(SignatureParseError::MissingHeader(
+                "canister_id in signature-input",
+            ))?,
+            method_name: method_name.ok_or(SignatureParseError::MissingHeader(
+                "method_name in signature-input",
+            ))?,
+            sender: sender.ok_or(SignatureParseError::MissingHeader(
+                "sender in signature-input",
+            ))?,
+            ingress_expiry: ingress_expiry.ok_or(SignatureParseError::MissingHeader(
+                "ingress_expiry in signature-input",
+            ))?,
+            nonce,
+        };
+
+        Ok(signature_input)
+    }
+
+    pub fn read_state_from_str(value: &str) -> Result<Self, SignatureParseError> {
+        let mut ingress_expiry = None;
+        let mut sender = None;
+        let mut nonce = None;
+
+        for pair in value.split(SIGNATURE_INPUTS_SEPARATOR) {
+            let pair = pair.trim();
+            if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
+                let key = key.trim();
+                let value = value.trim();
+
+                match key {
+                    "request_type" => {
+                        if value != "read_state" {
+                            return Err(SignatureParseError::InvalidHeaderValue(
+                                "request_type must be 'read_state'".to_string(),
+                            ));
+                        }
+                    }
+                    "ingress_expiry" => {
+                        ingress_expiry =
+                            Some(value.parse::<u64>().map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "sender" => {
+                        sender =
+                            Some(Principal::from_text(value).map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "nonce" => {
+                        nonce = Some(
+                            BASE64
+                                .decode(value)
+                                .or_else(|_| {
+                                    value
+                                        .parse::<u64>()
+                                        .map(|n| n.to_be_bytes().to_vec())
+                                        .map_err(|_| {
+                                            base64::DecodeError::InvalidLength(value.len())
+                                        })
+                                })
+                                .map_err(|e| {
+                                    SignatureParseError::Base64DecodeError(e.to_string())
+                                })?,
+                        );
+                    }
+                    _ => {} // Ignore unknown fields
+                }
+            }
+        }
+
+        let signature_input = SignatureInputData::ReadState {
+            ingress_expiry: ingress_expiry.ok_or(SignatureParseError::MissingHeader(
+                "ingress_expiry in signature-input",
+            ))?,
+            sender: sender.ok_or(SignatureParseError::MissingHeader(
+                "sender in signature-input",
+            ))?,
+            nonce,
+        };
+
+        Ok(signature_input)
+    }
+
+    pub fn query_from_str(value: &str) -> Result<Self, SignatureParseError> {
+        let mut canister_id = None;
+        let mut method_name = None;
+        let mut sender = None;
+        let mut ingress_expiry = None;
+        let mut nonce = None;
+
+        for pair in value.split(SIGNATURE_INPUTS_SEPARATOR) {
+            let pair = pair.trim();
+            if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
+                let key = key.trim();
+                let value = value.trim();
+
+                match key {
+                    "request_type" => {
+                        if value != "query" {
+                            return Err(SignatureParseError::InvalidHeaderValue(
+                                "request_type must be 'query'".to_string(),
+                            ));
+                        }
+                    }
+                    "canister_id" => {
+                        canister_id =
+                            Some(Principal::from_text(value).map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "method_name" => {
+                        method_name = Some(value.to_string());
+                    }
+                    "sender" => {
+                        sender =
+                            Some(Principal::from_text(value).map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "ingress_expiry" => {
+                        ingress_expiry =
+                            Some(value.parse::<u64>().map_err(|e| {
+                                SignatureParseError::InvalidHeaderValue(e.to_string())
+                            })?);
+                    }
+                    "nonce" => {
+                        nonce = Some(
+                            BASE64
+                                .decode(value)
+                                .or_else(|_| {
+                                    value
+                                        .parse::<u64>()
+                                        .map(|n| n.to_be_bytes().to_vec())
+                                        .map_err(|_| {
+                                            base64::DecodeError::InvalidLength(value.len())
+                                        })
+                                })
+                                .map_err(|e| {
+                                    SignatureParseError::Base64DecodeError(e.to_string())
+                                })?,
+                        );
+                    }
+                    _ => {} // Ignore unknown fields
+                }
+            }
+        }
+
+        let signature_input = SignatureInputData::Query {
+            canister_id: canister_id.ok_or(SignatureParseError::MissingHeader(
+                "canister_id in signature-input",
+            ))?,
+            method_name: method_name.ok_or(SignatureParseError::MissingHeader(
+                "method_name in signature-input",
+            ))?,
+            sender: sender.ok_or(SignatureParseError::MissingHeader(
+                "sender in signature-input",
+            ))?,
+            ingress_expiry: ingress_expiry.ok_or(SignatureParseError::MissingHeader(
+                "ingress_expiry in signature-input",
+            ))?,
+            nonce,
+        };
+
+        Ok(signature_input)
+    }
 }
 
 /// Data for a single signature
@@ -71,7 +320,6 @@ pub struct SignatureData {
 pub enum Signature {
     Call {
         call: SignatureData,
-        #[allow(dead_code)]
         read_state: Option<SignatureData>,
     },
     Query {
@@ -151,14 +399,6 @@ impl Signature {
         }
     }
 
-    /// Get the primary signature data based on the signature type
-    pub fn primary(&self) -> &SignatureData {
-        match self {
-            Signature::Call { call, .. } => call,
-            Signature::Query { query } => query,
-        }
-    }
-
     /// Check if this is a Call signature
     #[allow(dead_code)]
     pub fn is_call(&self) -> bool {
@@ -176,7 +416,7 @@ impl Signature {
 fn build_signature_data(
     sig_name: &str,
     signatures: &HashMap<String, Vec<u8>>,
-    signature_inputs: &HashMap<String, SignatureInputData>,
+    signature_inputs: &HashMap<String, String>,
     signature_keys: &HashMap<String, Vec<u8>>,
 ) -> Result<SignatureData, SignatureParseError> {
     let sender_sig = signatures
@@ -189,7 +429,7 @@ fn build_signature_data(
         })?
         .clone();
 
-    let signature_input = signature_inputs
+    let signature_input_str = signature_inputs
         .get(sig_name)
         .ok_or_else(|| {
             SignatureParseError::MissingRequiredSignature(format!(
@@ -198,6 +438,17 @@ fn build_signature_data(
             ))
         })?
         .clone();
+
+    let signature_input = match sig_name {
+        "sig_call" => SignatureInputData::call_from_str(&signature_input_str)?,
+        "sig_read_state" => SignatureInputData::read_state_from_str(&signature_input_str)?,
+        "sig_query" => SignatureInputData::query_from_str(&signature_input_str)?,
+        _ => {
+            return Err(SignatureParseError::InvalidSignatureName(
+                sig_name.to_string(),
+            ))
+        }
+    };
 
     let sender_pubkey = signature_keys
         .get(sig_name)
@@ -276,7 +527,7 @@ fn parse_signature_header(
 /// Format: <sig_name>=<key>=<value>;<key>=<value>;...,<sig_name>=<key>=<value>;<key>=<value>;...
 fn parse_signature_input_header(
     header_value: &str,
-) -> Result<HashMap<String, SignatureInputData>, SignatureParseError> {
+) -> Result<HashMap<String, String>, SignatureParseError> {
     let mut signature_inputs = HashMap::new();
 
     for entry in header_value.split(SIGNATURES_SEPARATOR) {
@@ -288,79 +539,9 @@ fn parse_signature_input_header(
         // Find the first '=' to extract sig_name
         if let Some(eq_pos) = entry.find(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
             let sig_name = entry[..eq_pos].trim().to_string();
-            let params_str = &entry[eq_pos + 1..];
+            let signature_input_value = entry[eq_pos + 1..].to_string();
 
-            // Parse key=value pairs separated by semicolons
-            let mut canister_id: Option<Principal> = None;
-            let mut method_name: Option<String> = None;
-            let mut sender: Option<Principal> = None;
-            let mut ingress_expiry: Option<u64> = None;
-            let mut nonce: Option<Vec<u8>> = None;
-
-            for pair in params_str.split(SIGNATURE_INPUTS_SEPARATOR) {
-                let pair = pair.trim();
-                if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
-                    let key = key.trim();
-                    let value = value.trim();
-
-                    match key {
-                        "canister_id" => {
-                            canister_id = Some(Principal::from_text(value).map_err(|e| {
-                                SignatureParseError::InvalidHeaderValue(e.to_string())
-                            })?);
-                        }
-                        "method_name" => {
-                            method_name = Some(value.to_string());
-                        }
-                        "sender" => {
-                            sender = Some(Principal::from_text(value).map_err(|e| {
-                                SignatureParseError::InvalidHeaderValue(e.to_string())
-                            })?);
-                        }
-                        "ingress_expiry" => {
-                            ingress_expiry = Some(value.parse::<u64>().map_err(|e| {
-                                SignatureParseError::InvalidHeaderValue(e.to_string())
-                            })?);
-                        }
-                        "nonce" => {
-                            nonce = Some(
-                                BASE64
-                                    .decode(value)
-                                    .or_else(|_| {
-                                        value
-                                            .parse::<u64>()
-                                            .map(|n| n.to_be_bytes().to_vec())
-                                            .map_err(|_| {
-                                                base64::DecodeError::InvalidLength(value.len())
-                                            })
-                                    })
-                                    .map_err(|e| {
-                                        SignatureParseError::Base64DecodeError(e.to_string())
-                                    })?,
-                            );
-                        }
-                        _ => {} // Ignore unknown fields
-                    }
-                }
-            }
-
-            let signature_input = SignatureInputData {
-                canister_id: canister_id.ok_or(SignatureParseError::MissingHeader(
-                    "canister_id in signature-input",
-                ))?,
-                method_name: method_name.ok_or(SignatureParseError::MissingHeader(
-                    "method_name in signature-input",
-                ))?,
-                sender: sender.ok_or(SignatureParseError::MissingHeader(
-                    "sender in signature-input",
-                ))?,
-                ingress_expiry: ingress_expiry.ok_or(SignatureParseError::MissingHeader(
-                    "ingress_expiry in signature-input",
-                ))?,
-                nonce,
-            };
-
-            signature_inputs.insert(sig_name, signature_input);
+            signature_inputs.insert(sig_name, signature_input_value);
         } else {
             return Err(SignatureParseError::InvalidHeaderValue(format!(
                 "Invalid signature-input entry format, expected '<sig_name>=<params>', got: {}",

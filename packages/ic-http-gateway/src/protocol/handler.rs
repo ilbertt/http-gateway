@@ -1,6 +1,8 @@
 use crate::protocol::canister::HttpRequestCanister;
 use crate::protocol::http::{
-    binary_to_http_response, construct_authenticated_envelope, construct_query_envelope,
+    binary_to_http_response, construct_authenticated_call_envelope,
+    construct_authenticated_query_envelope, construct_authenticated_read_state_envelope,
+    construct_query_envelope, construct_read_state_envelope, construct_update_envelope,
     has_auth_headers, http_request_to_binary, http_request_to_binary_all_headers,
     parse_include_headers,
 };
@@ -10,7 +12,7 @@ use crate::{
     HttpGatewayResponseMetadata,
 };
 use candid::Principal;
-use http::{Response, StatusCode};
+use http::{Method, Response, StatusCode};
 use http_body_util::Full;
 use ic_agent::{
     agent::{RejectCode, RejectResponse},
@@ -34,17 +36,23 @@ pub async fn process_request(
 ) -> HttpGatewayResponse {
     let canister = HttpRequestCanister::create(agent, canister_id);
 
-    // Check if request has authentication headers
+    // First, check if request has signature headers
     if has_auth_headers(&request) {
-        // Authenticated flow: use signed update call with filtered headers
+        // Authenticated flow: parse signature to determine query vs update
         process_authenticated_request(&canister, request).await
     } else {
-        // Non-authenticated flow: use anonymous query call with all headers
-        process_query_request(&canister, request).await
+        // Non-authenticated flow: use HTTP method to determine query vs update
+        // GET -> query call, otherwise -> update call
+        if request.method() == Method::GET {
+            process_non_auth_query_request(&canister, request).await
+        } else {
+            process_non_auth_update_request(&canister, request).await
+        }
     }
 }
 
 /// Process an authenticated request with signature verification
+/// Determines query vs update based on signature type (Signature::Query -> query, Signature::Call -> update)
 async fn process_authenticated_request(
     canister: &HttpRequestCanister<'_>,
     request: CanisterRequest,
@@ -103,40 +111,111 @@ async fn process_authenticated_request(
         }
     };
 
-    // Get the primary signature data (call signature for Call variant, query for Query variant)
-    let signature_data = signature.primary();
+    let mut upgraded_to_update_call = false;
 
-    // Construct the authenticated envelope with signature information
-    let envelope_bytes = match construct_authenticated_envelope(signature_data, binary_request) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return HttpGatewayResponse {
-                canister_response: create_err_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("Failed to construct authenticated envelope: {}", e),
-                ),
-                metadata: HttpGatewayResponseMetadata {
-                    upgraded_to_update_call: false,
-                    response_verification_version: None,
-                    internal_error: None,
-                },
+    // Determine call type based on signature variant
+    let response_bytes = match &signature {
+        Signature::Query { query } => {
+            // Authenticated query: use query envelope and query call
+            let envelope_bytes = match construct_authenticated_query_envelope(query, binary_request)
+            {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return HttpGatewayResponse {
+                        canister_response: create_err_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("Failed to construct authenticated query envelope: {}", e),
+                        ),
+                        metadata: HttpGatewayResponseMetadata {
+                            upgraded_to_update_call,
+                            response_verification_version: None,
+                            internal_error: None,
+                        },
+                    };
+                }
             };
+
+            // Send the signed envelope to the replica via query call
+            match canister.http_request(envelope_bytes).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return HttpGatewayResponse {
+                        canister_response: handle_agent_error(&e),
+                        metadata: HttpGatewayResponseMetadata {
+                            upgraded_to_update_call,
+                            response_verification_version: None,
+                            internal_error: Some(e.into()),
+                        },
+                    };
+                }
+            }
         }
-    };
+        Signature::Call {
+            call, read_state, ..
+        } => {
+            upgraded_to_update_call = true;
 
-    // Send the signed envelope to the replica via update call
-    let response_bytes = match canister.http_request_update(envelope_bytes).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            println!("http_request_update error: {:?}", e);
-            return HttpGatewayResponse {
-                canister_response: handle_agent_error(&e),
-                metadata: HttpGatewayResponseMetadata {
-                    upgraded_to_update_call: true,
-                    response_verification_version: None,
-                    internal_error: Some(e.into()),
-                },
+            // Authenticated update: use call envelope and update call
+            let call_envelope = match construct_authenticated_call_envelope(call, binary_request) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return HttpGatewayResponse {
+                        canister_response: create_err_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("Failed to construct authenticated envelope: {}", e),
+                        ),
+                        metadata: HttpGatewayResponseMetadata {
+                            upgraded_to_update_call,
+                            response_verification_version: None,
+                            internal_error: None,
+                        },
+                    };
+                }
             };
+
+            let read_state_envelope = if let Some(read_state) = read_state {
+                match construct_authenticated_read_state_envelope(
+                    read_state,
+                    call_envelope.content.to_request_id(),
+                ) {
+                    Ok(envelope) => Some(envelope),
+                    Err(e) => {
+                        return HttpGatewayResponse {
+                            canister_response: create_err_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &format!(
+                                    "Failed to construct authenticated read state envelope: {}",
+                                    e
+                                ),
+                            ),
+                            metadata: HttpGatewayResponseMetadata {
+                                upgraded_to_update_call,
+                                response_verification_version: None,
+                                internal_error: None,
+                            },
+                        };
+                    }
+                }
+            } else {
+                None
+            };
+
+            match canister
+                .http_request_update(call_envelope, read_state_envelope)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return HttpGatewayResponse {
+                        canister_response: handle_agent_error(&e),
+                        metadata: HttpGatewayResponseMetadata {
+                            upgraded_to_update_call,
+                            response_verification_version: None,
+                            internal_error: Some(e.into()),
+                        },
+                    };
+                }
+            }
         }
     };
 
@@ -150,7 +229,7 @@ async fn process_authenticated_request(
                     &format!("Failed to parse binary response: {}", e),
                 ),
                 metadata: HttpGatewayResponseMetadata {
-                    upgraded_to_update_call: true,
+                    upgraded_to_update_call,
                     response_verification_version: None,
                     internal_error: None,
                 },
@@ -161,15 +240,15 @@ async fn process_authenticated_request(
     HttpGatewayResponse {
         canister_response,
         metadata: HttpGatewayResponseMetadata {
-            upgraded_to_update_call: true,
+            upgraded_to_update_call,
             response_verification_version: None,
             internal_error: None,
         },
     }
 }
 
-/// Process a non-authenticated query request
-async fn process_query_request(
+/// Process a non-authenticated query request (GET requests)
+async fn process_non_auth_query_request(
     canister: &HttpRequestCanister<'_>,
     request: CanisterRequest,
 ) -> HttpGatewayResponse {
@@ -192,8 +271,8 @@ async fn process_query_request(
     };
 
     // Construct the anonymous query envelope
-    let envelope_bytes = match construct_query_envelope(canister.canister_id(), binary_request) {
-        Ok(bytes) => bytes,
+    let query_envelope = match construct_query_envelope(canister.canister_id(), binary_request) {
+        Ok(envelope) => envelope,
         Err(e) => {
             return HttpGatewayResponse {
                 canister_response: create_err_response(
@@ -210,7 +289,7 @@ async fn process_query_request(
     };
 
     // Send the anonymous envelope to the replica via query call
-    let response_bytes = match canister.http_request(envelope_bytes).await {
+    let response_bytes = match canister.http_request(query_envelope).await {
         Ok(bytes) => bytes,
         Err(e) => {
             return HttpGatewayResponse {
@@ -248,6 +327,111 @@ async fn process_query_request(
         canister_response,
         metadata: HttpGatewayResponseMetadata {
             upgraded_to_update_call: false,
+            response_verification_version: None,
+            internal_error: None,
+        },
+    }
+}
+
+/// Process a non-authenticated update request (non-GET requests)
+async fn process_non_auth_update_request(
+    canister: &HttpRequestCanister<'_>,
+    request: CanisterRequest,
+) -> HttpGatewayResponse {
+    // Convert HTTP request to binary representation (include all headers)
+    let binary_request = match http_request_to_binary_all_headers(&request) {
+        Ok(binary) => binary,
+        Err(e) => {
+            return HttpGatewayResponse {
+                canister_response: create_err_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to convert request to binary: {}", e),
+                ),
+                metadata: HttpGatewayResponseMetadata {
+                    upgraded_to_update_call: true,
+                    response_verification_version: None,
+                    internal_error: None,
+                },
+            };
+        }
+    };
+
+    // Construct the anonymous update envelope
+    let call_envelope = match construct_update_envelope(canister.canister_id(), binary_request) {
+        Ok(envelope) => envelope,
+        Err(e) => {
+            return HttpGatewayResponse {
+                canister_response: create_err_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to construct update envelope: {}", e),
+                ),
+                metadata: HttpGatewayResponseMetadata {
+                    upgraded_to_update_call: true,
+                    response_verification_version: None,
+                    internal_error: None,
+                },
+            };
+        }
+    };
+
+    let read_state_envelope =
+        match construct_read_state_envelope(call_envelope.content.to_request_id()) {
+            Ok(envelope) => Some(envelope),
+            Err(e) => {
+                return HttpGatewayResponse {
+                    canister_response: create_err_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &format!("Failed to construct read state envelope: {}", e),
+                    ),
+                    metadata: HttpGatewayResponseMetadata {
+                        upgraded_to_update_call: true,
+                        response_verification_version: None,
+                        internal_error: None,
+                    },
+                };
+            }
+        };
+
+    // Send the anonymous envelope to the replica via update call
+    let response_bytes = match canister
+        .http_request_update(call_envelope, read_state_envelope)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return HttpGatewayResponse {
+                canister_response: handle_agent_error(&e),
+                metadata: HttpGatewayResponseMetadata {
+                    upgraded_to_update_call: true,
+                    response_verification_version: None,
+                    internal_error: Some(e.into()),
+                },
+            };
+        }
+    };
+
+    // Parse the binary response back to HTTP response
+    let canister_response = match binary_to_http_response(&response_bytes) {
+        Ok(response) => response,
+        Err(e) => {
+            return HttpGatewayResponse {
+                canister_response: create_err_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to parse binary response: {}", e),
+                ),
+                metadata: HttpGatewayResponseMetadata {
+                    upgraded_to_update_call: true,
+                    response_verification_version: None,
+                    internal_error: None,
+                },
+            };
+        }
+    };
+
+    HttpGatewayResponse {
+        canister_response,
+        metadata: HttpGatewayResponseMetadata {
+            upgraded_to_update_call: true,
             response_verification_version: None,
             internal_error: None,
         },

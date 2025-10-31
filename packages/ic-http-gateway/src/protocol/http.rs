@@ -1,11 +1,14 @@
 use crate::protocol::signature::{
-    SignatureData, SIGNATURE_HEADER_NAME, SIGNATURE_INPUT_HEADER_NAME, SIGNATURE_KEY_HEADER_NAME,
+    SignatureData, SignatureInputData, SIGNATURE_HEADER_NAME, SIGNATURE_INPUT_HEADER_NAME,
+    SIGNATURE_KEY_HEADER_NAME,
 };
 use crate::{CanisterRequest, CanisterResponse, HttpGatewayResponseBody};
 use candid::Principal;
 use http::{HeaderName, HeaderValue, Response, StatusCode};
 use http_body_util::Full;
 use ic_agent::agent::{Envelope, EnvelopeContent};
+use ic_agent::hash_tree::Label;
+use ic_agent::RequestId;
 use std::borrow::Cow;
 use std::io::Cursor;
 
@@ -185,18 +188,31 @@ pub fn binary_to_http_response(binary: &[u8]) -> Result<CanisterResponse, HttpPr
     Ok(response)
 }
 
-/// Construct the CBOR-encoded envelope for authenticated requests
-pub fn construct_authenticated_envelope(
-    signature_data: &SignatureData,
+/// Construct the CBOR-encoded envelope for authenticated update requests (Call)
+pub fn construct_authenticated_call_envelope(
+    signature_data: &'_ SignatureData,
     binary_request: Vec<u8>,
-) -> Result<Vec<u8>, HttpProcessingError> {
+) -> Result<Envelope<'_>, HttpProcessingError> {
+    let SignatureInputData::Call {
+        canister_id,
+        method_name,
+        sender,
+        ingress_expiry,
+        nonce,
+    } = signature_data.signature_input.clone()
+    else {
+        return Err(HttpProcessingError::InvalidHeaderValue(
+            "Signature input must be a call".to_string(),
+        ));
+    };
+
     // Create the EnvelopeContent::Call variant
     let content = EnvelopeContent::Call {
-        nonce: signature_data.signature_input.nonce.clone(),
-        ingress_expiry: signature_data.signature_input.ingress_expiry,
-        sender: signature_data.signature_input.sender,
-        canister_id: signature_data.signature_input.canister_id,
-        method_name: signature_data.signature_input.method_name.clone(),
+        canister_id,
+        method_name,
+        sender,
+        ingress_expiry,
+        nonce,
         arg: binary_request,
     };
 
@@ -208,15 +224,93 @@ pub fn construct_authenticated_envelope(
         sender_delegation: None, // TODO: Support delegation chains from Internet Identity
     };
 
-    // Use ic-agent's encode_bytes method to properly CBOR-encode the envelope
-    Ok(envelope.encode_bytes())
+    Ok(envelope)
+}
+
+/// Construct the CBOR-encoded envelope for authenticated read_state requests (ReadState)
+pub fn construct_authenticated_read_state_envelope(
+    signature_data: &'_ SignatureData,
+    request_id: RequestId,
+) -> Result<Envelope<'_>, HttpProcessingError> {
+    let SignatureInputData::ReadState {
+        ingress_expiry,
+        sender,
+        nonce: _, // Not used in the read_state envelope
+    } = signature_data.signature_input.clone()
+    else {
+        return Err(HttpProcessingError::InvalidHeaderValue(
+            "Signature input must be a read_state".to_string(),
+        ));
+    };
+
+    let paths = vec![vec![
+        Label::from_bytes(b"request_state"),
+        request_id.signable().into(),
+    ]];
+
+    // Create the EnvelopeContent::ReadState variant
+    let content = EnvelopeContent::ReadState {
+        ingress_expiry,
+        sender,
+        paths,
+    };
+
+    // Create the Envelope with signature
+    let envelope = Envelope {
+        content: Cow::Owned(content),
+        sender_pubkey: Some(signature_data.sender_pubkey.clone()),
+        sender_sig: Some(signature_data.sender_sig.clone()),
+        sender_delegation: None, // TODO: Support delegation chains from Internet Identity
+    };
+
+    Ok(envelope)
+}
+
+/// Construct the CBOR-encoded envelope for authenticated query requests (Query)
+pub fn construct_authenticated_query_envelope(
+    signature_data: &'_ SignatureData,
+    binary_request: Vec<u8>,
+) -> Result<Envelope<'_>, HttpProcessingError> {
+    // Extract fields from SignatureInputData::Query variant
+    let SignatureInputData::Query {
+        canister_id,
+        method_name,
+        sender,
+        ingress_expiry,
+        nonce,
+    } = signature_data.signature_input.clone()
+    else {
+        return Err(HttpProcessingError::InvalidHeaderValue(
+            "Signature input must be a query".to_string(),
+        ));
+    };
+
+    // Create the EnvelopeContent::Query variant
+    let content = EnvelopeContent::Query {
+        nonce,
+        ingress_expiry,
+        sender,
+        canister_id,
+        method_name,
+        arg: binary_request,
+    };
+
+    // Create the Envelope with signature
+    let envelope = Envelope {
+        content: Cow::Owned(content),
+        sender_pubkey: Some(signature_data.sender_pubkey.clone()),
+        sender_sig: Some(signature_data.sender_sig.clone()),
+        sender_delegation: None, // TODO: Support delegation chains from Internet Identity
+    };
+
+    Ok(envelope)
 }
 
 /// Construct the CBOR-encoded envelope for non-authenticated query requests
-pub fn construct_query_envelope(
+pub fn construct_query_envelope<'a>(
     canister_id: Principal,
     binary_request: Vec<u8>,
-) -> Result<Vec<u8>, HttpProcessingError> {
+) -> Result<Envelope<'a>, HttpProcessingError> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // For non-authenticated requests, use anonymous sender and set expiry
@@ -244,6 +338,73 @@ pub fn construct_query_envelope(
         sender_delegation: None,
     };
 
-    // Use ic-agent's encode_bytes method to properly CBOR-encode the envelope
-    Ok(envelope.encode_bytes())
+    Ok(envelope)
+}
+
+/// Construct the CBOR-encoded envelope for non-authenticated update requests (Call)
+pub fn construct_update_envelope<'a>(
+    canister_id: Principal,
+    binary_request: Vec<u8>,
+) -> Result<Envelope<'a>, HttpProcessingError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // For non-authenticated requests, use anonymous sender and set expiry
+    let ingress_expiry = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?
+        .as_nanos() as u64
+        + 300_000_000_000; // 5 minutes from now
+
+    // Create the EnvelopeContent::Call variant for non-authenticated update requests
+    let content = EnvelopeContent::Call {
+        nonce: None,
+        ingress_expiry,
+        sender: Principal::anonymous(),
+        canister_id,
+        method_name: "http_request_update".to_string(),
+        arg: binary_request,
+    };
+
+    // Create the Envelope without signature (anonymous)
+    let envelope = Envelope {
+        content: Cow::Owned(content),
+        sender_pubkey: None,
+        sender_sig: None,
+        sender_delegation: None,
+    };
+
+    Ok(envelope)
+}
+
+pub fn construct_read_state_envelope<'a>(
+    request_id: RequestId,
+) -> Result<Envelope<'a>, HttpProcessingError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // For non-authenticated requests, use anonymous sender and set expiry
+    let ingress_expiry = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?
+        .as_nanos() as u64
+        + 300_000_000_000; // 5 minutes from now
+
+    let paths = vec![vec![
+        Label::from_bytes(b"request_state"),
+        request_id.signable().into(),
+    ]];
+
+    let content = EnvelopeContent::ReadState {
+        ingress_expiry,
+        sender: Principal::anonymous(),
+        paths,
+    };
+
+    let envelope = Envelope {
+        content: Cow::Owned(content),
+        sender_pubkey: None,
+        sender_sig: None,
+        sender_delegation: None,
+    };
+
+    Ok(envelope)
 }
