@@ -3,7 +3,7 @@ use crate::protocol::http::{
     binary_to_http_response, construct_authenticated_call_envelope,
     construct_authenticated_query_envelope, construct_authenticated_read_state_envelope,
     construct_query_envelope, construct_read_state_envelope, construct_update_envelope,
-    has_auth_headers, http_request_to_binary, http_request_to_binary_all_headers,
+    has_signature_headers, http_request_to_binary, http_request_to_binary_all_headers,
     parse_include_headers,
 };
 use crate::protocol::signature::Signature;
@@ -37,7 +37,7 @@ pub async fn process_request(
     let canister = HttpRequestCanister::create(agent, canister_id);
 
     // First, check if request has signature headers
-    if has_auth_headers(&request) {
+    if has_signature_headers(&request) {
         // Authenticated flow: parse signature to determine query vs update
         process_authenticated_request(&canister, request).await
     } else {

@@ -45,11 +45,13 @@ impl std::fmt::Display for HttpProcessingError {
 impl std::error::Error for HttpProcessingError {}
 
 /// Check if the request has authentication headers
-pub fn has_auth_headers(request: &CanisterRequest) -> bool {
-    request.headers().contains_key(SIGNATURE_HEADER_NAME)
-        && request.headers().contains_key(SIGNATURE_INPUT_HEADER_NAME)
-        && request.headers().contains_key(SIGNATURE_KEY_HEADER_NAME)
-        && request.headers().contains_key(IC_INCLUDE_HEADERS)
+pub fn has_signature_headers(request: &CanisterRequest) -> bool {
+    let headers = request.headers();
+
+    headers.contains_key(SIGNATURE_HEADER_NAME)
+        && headers.contains_key(SIGNATURE_INPUT_HEADER_NAME)
+        && headers.contains_key(SIGNATURE_KEY_HEADER_NAME)
+        && headers.contains_key(IC_INCLUDE_HEADERS)
 }
 
 /// Parse the IC-Include-Headers header value
