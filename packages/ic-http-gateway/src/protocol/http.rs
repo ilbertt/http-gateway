@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 /// Custom header names used in the protocol
-pub const IC_INCLUDE_HEADERS: &str = "x-ic-include-headers";
+const IC_INCLUDE_HEADERS: &str = "ic-include-headers";
 
 const IC_INCLUDE_HEADERS_SEPARATOR: char = ',';
 
