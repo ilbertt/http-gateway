@@ -13,6 +13,8 @@ use ic_http_certification::{HttpRequest, HttpResponse};
 use std::borrow::Cow;
 use std::io::Cursor;
 
+const HOST_HEADER_NAME: &str = "host";
+
 /// Custom header names used in the protocol
 const IC_INCLUDE_HEADERS: &str = "ic-include-headers";
 
@@ -101,15 +103,13 @@ pub fn http_request_to_binary(
         .unwrap_or("http")
         .as_bytes()
         .to_vec();
+    // The authority is always set by the ic-gateway in the Host header,
+    // see https://github.com/dfinity/ic-gateway/blob/c26dc717e8b1c03aa57d8758e7d4a288f900e9fc/src/routing/ic/handler.rs#L61-L68
     let authority = request
-        .uri()
-        .authority()
-        .map(|a| a.as_str().as_bytes().to_vec())
-        .unwrap_or_else(|| {
-            "lqy7q-dh777-77777-aaaaq-cai.localhost:4943"
-                .as_bytes()
-                .to_vec()
-        });
+        .headers()
+        .get(HOST_HEADER_NAME)
+        .map(|h| h.as_bytes().to_vec())
+        .expect("Host header is set by the ic-gateway");
     let path = request
         .uri()
         .path_and_query()
