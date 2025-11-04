@@ -9,6 +9,7 @@ use http_body_util::Full;
 use ic_agent::agent::{Envelope, EnvelopeContent};
 use ic_agent::hash_tree::Label;
 use ic_agent::RequestId;
+use ic_http_certification::{HttpRequest, HttpResponse};
 use std::borrow::Cow;
 use std::io::Cursor;
 
@@ -409,4 +410,96 @@ pub fn construct_read_state_envelope<'a>(
     };
 
     Ok(envelope)
+}
+
+/// Convert CanisterRequest with filtered headers to ic_http_certification::HttpRequest
+/// This is used for response verification
+pub fn canister_request_to_http_request(
+    request: &CanisterRequest,
+    include_headers: &[String],
+) -> Result<HttpRequest<'static>, HttpProcessingError> {
+    let uri = request.uri();
+    let mut url = uri.path().to_string();
+    if let Some(query) = uri.query() {
+        url.push('?');
+        url.push_str(query);
+    }
+
+    // Filter and collect headers
+    let mut filtered_headers: Vec<(String, String)> = request
+        .headers()
+        .iter()
+        .filter(|(name, _)| {
+            let header_name_lower = name.as_str().to_lowercase();
+            include_headers.contains(&header_name_lower)
+        })
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                value.to_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+
+    // Sort headers lexicographically by name (case-insensitive)
+    filtered_headers.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+    Ok(HttpRequest::builder()
+        .with_method(request.method().clone())
+        .with_url(url)
+        .with_headers(filtered_headers)
+        .with_body(request.body().to_vec())
+        .build())
+}
+
+/// Convert bhttp binary response to ic_http_certification::HttpResponse
+/// This is used for response verification
+pub fn binary_to_certification_http_response(
+    binary: &[u8],
+) -> Result<HttpResponse<'static>, HttpProcessingError> {
+    use bhttp::{ControlData, Message};
+    use ic_http_certification::StatusCode as CertStatusCode;
+
+    // Decode the bhttp message
+    let mut cursor = Cursor::new(binary);
+    let message = Message::read_bhttp(&mut cursor)
+        .map_err(|e| HttpProcessingError::BhttpDecodeError(e.to_string()))?;
+
+    // Extract status code from control data
+    let status_code = match message.control() {
+        ControlData::Response(status) => {
+            // bhttp::StatusCode is a newtype around u16, need to extract the value
+            let status_u16: u16 = (*status).into();
+            CertStatusCode::try_from(status_u16).map_err(|_| {
+                HttpProcessingError::BhttpDecodeError(format!(
+                    "Invalid status code: {}",
+                    status_u16
+                ))
+            })?
+        }
+        _ => {
+            return Err(HttpProcessingError::BhttpDecodeError(
+                "Expected response control data, got request".to_string(),
+            ))
+        }
+    };
+
+    // Collect headers
+    let headers: Vec<(String, String)> = message
+        .header()
+        .fields()
+        .iter()
+        .map(|field| {
+            (
+                String::from_utf8_lossy(field.name()).to_string(),
+                String::from_utf8_lossy(field.value()).to_string(),
+            )
+        })
+        .collect();
+
+    Ok(HttpResponse::builder()
+        .with_status_code(status_code)
+        .with_headers(headers)
+        .with_body(message.content().to_vec())
+        .build())
 }
