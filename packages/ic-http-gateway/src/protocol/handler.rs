@@ -241,7 +241,9 @@ fn verify_and_process_response(
         }
     };
 
-    // Apply header filtering based on verification version
+    // Apply header filtering based on verification version.
+    // If there is no validation info, that means we've skipped verification,
+    // this should only happen for raw domains and update calls.
     if let Some(validation_info) = &validation_info {
         if validation_info.verification_version < 2 {
             // Status codes are not certified in v1, reject known dangerous status codes
@@ -278,22 +280,6 @@ fn verify_and_process_response(
                 }
             }
         }
-    } else {
-        // If there is no validation info, that means we've skipped verification,
-        // this should only happen for raw domains.
-
-        // TODO: handle absence of response verification here
-        // return Err(HttpGatewayResponse {
-        //     canister_response: create_canister_error_response(
-        //         StatusCode::INTERNAL_SERVER_ERROR,
-        //         "Skipping response verification for raw domains is not allowed",
-        //     ),
-        //     metadata: HttpGatewayResponseMetadata {
-        //         upgraded_to_update_call: is_update_call,
-        //         response_verification_version,
-        //         internal_error: None,
-        //     },
-        // });
     }
 
     Ok((canister_response, response_verification_version))
