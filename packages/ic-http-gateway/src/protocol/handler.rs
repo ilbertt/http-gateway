@@ -1,9 +1,11 @@
-use crate::protocol::canister::HttpRequestCanister;
+use crate::protocol::canister::{
+    construct_query_envelope, construct_read_state_envelope, construct_update_envelope,
+    HttpRequestCanister,
+};
 use crate::protocol::http::{
     binary_to_certification_http_response, binary_to_http_response,
     canister_request_to_http_request, construct_authenticated_call_envelope,
     construct_authenticated_query_envelope, construct_authenticated_read_state_envelope,
-    construct_query_envelope, construct_read_state_envelope, construct_update_envelope,
     has_signature_headers, http_request_to_binary, http_request_to_binary_all_headers,
     parse_include_headers,
 };

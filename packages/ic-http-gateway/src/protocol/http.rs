@@ -3,7 +3,6 @@ use crate::protocol::signature::{
     SIGNATURE_KEY_HEADER_NAME,
 };
 use crate::{CanisterRequest, CanisterResponse, HttpGatewayResponseBody};
-use candid::Principal;
 use http::{HeaderName, HeaderValue, Response, StatusCode};
 use http_body_util::Full;
 use ic_agent::agent::{Envelope, EnvelopeContent};
@@ -304,109 +303,6 @@ pub fn construct_authenticated_query_envelope(
         sender_pubkey: Some(signature_data.sender_pubkey.clone()),
         sender_sig: Some(signature_data.sender_sig.clone()),
         sender_delegation: None, // TODO: Support delegation chains from Internet Identity
-    };
-
-    Ok(envelope)
-}
-
-/// Construct the CBOR-encoded envelope for non-authenticated query requests
-pub fn construct_query_envelope<'a>(
-    canister_id: Principal,
-    binary_request: Vec<u8>,
-) -> Result<Envelope<'a>, HttpProcessingError> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // For non-authenticated requests, use anonymous sender and set expiry
-    let ingress_expiry = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?
-        .as_nanos() as u64
-        + 300_000_000_000; // 5 minutes from now
-
-    // Create the EnvelopeContent::Query variant for non-authenticated requests
-    let content = EnvelopeContent::Query {
-        nonce: None,
-        ingress_expiry,
-        sender: Principal::anonymous(),
-        canister_id,
-        method_name: "http_request".to_string(),
-        arg: binary_request,
-    };
-
-    // Create the Envelope without signature (anonymous)
-    let envelope = Envelope {
-        content: Cow::Owned(content),
-        sender_pubkey: None,
-        sender_sig: None,
-        sender_delegation: None,
-    };
-
-    Ok(envelope)
-}
-
-/// Construct the CBOR-encoded envelope for non-authenticated update requests (Call)
-pub fn construct_update_envelope<'a>(
-    canister_id: Principal,
-    binary_request: Vec<u8>,
-) -> Result<Envelope<'a>, HttpProcessingError> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // For non-authenticated requests, use anonymous sender and set expiry
-    let ingress_expiry = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?
-        .as_nanos() as u64
-        + 300_000_000_000; // 5 minutes from now
-
-    // Create the EnvelopeContent::Call variant for non-authenticated update requests
-    let content = EnvelopeContent::Call {
-        nonce: None,
-        ingress_expiry,
-        sender: Principal::anonymous(),
-        canister_id,
-        method_name: "http_request_update".to_string(),
-        arg: binary_request,
-    };
-
-    // Create the Envelope without signature (anonymous)
-    let envelope = Envelope {
-        content: Cow::Owned(content),
-        sender_pubkey: None,
-        sender_sig: None,
-        sender_delegation: None,
-    };
-
-    Ok(envelope)
-}
-
-pub fn construct_read_state_envelope<'a>(
-    request_id: RequestId,
-) -> Result<Envelope<'a>, HttpProcessingError> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // For non-authenticated requests, use anonymous sender and set expiry
-    let ingress_expiry = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?
-        .as_nanos() as u64
-        + 300_000_000_000; // 5 minutes from now
-
-    let paths = vec![vec![
-        Label::from_bytes(b"request_state"),
-        request_id.signable().into(),
-    ]];
-
-    let content = EnvelopeContent::ReadState {
-        ingress_expiry,
-        sender: Principal::anonymous(),
-        paths,
-    };
-
-    let envelope = Envelope {
-        content: Cow::Owned(content),
-        sender_pubkey: None,
-        sender_sig: None,
-        sender_delegation: None,
     };
 
     Ok(envelope)
