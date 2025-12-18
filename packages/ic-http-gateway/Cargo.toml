@@ -10,7 +10,7 @@ categories = [
     "wasm",
 ]
 keywords = ["internet-computer", "http", "gateway", "icp", "dfinity"]
-include = ["src", "Cargo.toml", "LICENSE", "README.md"]
+include = ["src", "Cargo.toml", "README.md"]
 
 version.workspace = true
 authors.workspace = true

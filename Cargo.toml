@@ -12,7 +12,7 @@ members = [
 default-members = ["packages/ic-http-gateway"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.0.0-git"
 authors = ["DFINITY Stiftung"]
 edition = "2021"
 repository = "https://github.com/dfinity/http-gateway"
@@ -44,8 +44,8 @@ reqwest = "0.12"
 
 ic-cdk = "0.17"
 ic-cdk-macros = "0.17"
-ic-agent = { git = "https://github.com/dfinity/agent-rs", rev = "f34acedb5539838ffdbd4cf49a0832303977293f" }
-ic-utils = { git = "https://github.com/dfinity/agent-rs", rev = "f34acedb5539838ffdbd4cf49a0832303977293f" }
+ic-agent = "0.44"
+ic-utils = "0.44"
 candid = "0.10"
 pocket-ic = "6.0"
 assert_matches = "1"
@@ -57,4 +57,4 @@ ic-certification = ">=3.0.3, <4.0.0"
 ic-http-certification = ">=3.0.3, <4.0.0"
 ic-asset-certification = ">=3.0.3, <4.0.0"
 
-ic-http-gateway = { path = "./packages/ic-http-gateway", version = "0.3.0" }
+ic-http-gateway = { path = "./packages/ic-http-gateway", version = "0.0.0-git" }
