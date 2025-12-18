@@ -23,11 +23,12 @@ use ic_agent::{
     Agent, AgentError,
 };
 
+const CURRENT_RESPONSE_VERIFICATION_VERSION: u16 = 2;
+
 /// Execute a query call and process the response with verification
 async fn execute_query_call<'a>(
     canister: &HttpRequestCanister<'_>,
     agent: &Agent,
-    canister_id: &Principal,
     request: &CanisterRequest,
     envelope: ic_agent::agent::Envelope<'a>,
     include_headers: &[String],
@@ -49,7 +50,7 @@ async fn execute_query_call<'a>(
     // Verify response and apply header filtering
     match verify_and_process_response(
         agent,
-        canister_id,
+        &canister.canister_id(),
         request,
         include_headers,
         &response_bytes,
@@ -72,7 +73,6 @@ async fn execute_query_call<'a>(
 async fn execute_update_call<'a>(
     canister: &HttpRequestCanister<'_>,
     agent: Option<&Agent>,
-    canister_id: Option<&Principal>,
     request: Option<&CanisterRequest>,
     call_envelope: ic_agent::agent::Envelope<'a>,
     read_state_envelope: Option<ic_agent::agent::Envelope<'a>>,
@@ -98,12 +98,10 @@ async fn execute_update_call<'a>(
     };
 
     // If we have verification parameters, verify the response
-    if let (Some(agent), Some(canister_id), Some(request), Some(include_headers)) =
-        (agent, canister_id, request, include_headers)
-    {
+    if let (Some(agent), Some(request), Some(include_headers)) = (agent, request, include_headers) {
         match verify_and_process_response(
             agent,
-            canister_id,
+            &canister.canister_id(),
             request,
             include_headers,
             &response_bytes,
@@ -245,7 +243,7 @@ fn verify_and_process_response(
     // If there is no validation info, that means we've skipped verification,
     // this should only happen for raw domains and update calls.
     if let Some(validation_info) = &validation_info {
-        if validation_info.verification_version < 2 {
+        if validation_info.verification_version < CURRENT_RESPONSE_VERIFICATION_VERSION {
             // Status codes are not certified in v1, reject known dangerous status codes
             let status = canister_response.status();
             if status.as_u16() >= 300 && status.as_u16() < 400 {
@@ -296,20 +294,12 @@ pub async fn process_request(
     // First, check if request has signature headers
     if has_signature_headers(&request) {
         // Authenticated flow: parse signature to determine query vs update
-        process_authenticated_request(&canister, agent, request, canister_id, skip_verification)
-            .await
+        process_authenticated_request(&canister, agent, request, skip_verification).await
     } else {
         // Non-authenticated flow: use HTTP method to determine query vs update
         // GET -> query call, otherwise -> update call
         if request.method() == Method::GET {
-            process_non_auth_query_request(
-                &canister,
-                agent,
-                request,
-                canister_id,
-                skip_verification,
-            )
-            .await
+            process_non_auth_query_request(&canister, agent, request, skip_verification).await
         } else {
             process_non_auth_update_request(&canister, request).await
         }
@@ -322,7 +312,6 @@ async fn process_authenticated_request(
     canister: &HttpRequestCanister<'_>,
     agent: &Agent,
     request: CanisterRequest,
-    canister_id: Principal,
     skip_verification: bool,
 ) -> HttpGatewayResponse {
     // Parse signatures from headers
@@ -384,7 +373,6 @@ async fn process_authenticated_request(
             execute_query_call(
                 canister,
                 agent,
-                &canister_id,
                 &request,
                 envelope_bytes,
                 &include_headers,
@@ -433,7 +421,6 @@ async fn process_authenticated_request(
             execute_update_call(
                 canister,
                 Some(agent),
-                Some(&canister_id),
                 Some(&request),
                 call_envelope,
                 read_state_envelope,
@@ -450,7 +437,6 @@ async fn process_non_auth_query_request(
     canister: &HttpRequestCanister<'_>,
     agent: &Agent,
     request: CanisterRequest,
-    canister_id: Principal,
     skip_verification: bool,
 ) -> HttpGatewayResponse {
     // Get all headers for non-authenticated requests
@@ -489,7 +475,6 @@ async fn process_non_auth_query_request(
     execute_query_call(
         canister,
         agent,
-        &canister_id,
         &request,
         query_envelope,
         &include_headers,
@@ -545,7 +530,6 @@ async fn process_non_auth_update_request(
     execute_update_call(
         canister,
         None, // No verification for anonymous update calls
-        None,
         None,
         call_envelope,
         read_state_envelope,
