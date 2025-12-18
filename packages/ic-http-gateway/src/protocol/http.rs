@@ -14,11 +14,6 @@ use std::io::Cursor;
 
 const HOST_HEADER_NAME: &str = "host";
 
-/// Custom header names used in the protocol
-const IC_INCLUDE_HEADERS: &str = "ic-include-headers";
-
-const IC_INCLUDE_HEADERS_SEPARATOR: char = ',';
-
 /// Errors that can occur during HTTP processing
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -53,24 +48,6 @@ pub fn has_signature_headers(request: &CanisterRequest) -> bool {
     headers.contains_key(SIGNATURE_HEADER_NAME)
         && headers.contains_key(SIGNATURE_INPUT_HEADER_NAME)
         && headers.contains_key(SIGNATURE_KEY_HEADER_NAME)
-        && headers.contains_key(IC_INCLUDE_HEADERS)
-}
-
-/// Parse the IC-Include-Headers header value
-pub fn parse_include_headers(
-    request: &CanisterRequest,
-) -> Result<Vec<String>, HttpProcessingError> {
-    let include_headers_str = request
-        .headers()
-        .get(IC_INCLUDE_HEADERS)
-        .ok_or(HttpProcessingError::MissingHeader(IC_INCLUDE_HEADERS))?
-        .to_str()
-        .map_err(|e| HttpProcessingError::InvalidHeaderValue(e.to_string()))?;
-
-    Ok(include_headers_str
-        .split(IC_INCLUDE_HEADERS_SEPARATOR)
-        .map(|s| s.trim().to_lowercase())
-        .collect())
 }
 
 /// Convert HTTP request to binary representation using bhttp (for non-authenticated requests, includes all headers)
@@ -201,6 +178,7 @@ pub fn construct_authenticated_call_envelope(
         sender,
         ingress_expiry,
         nonce,
+        include_headers: _,
     } = signature_data.signature_input.clone()
     else {
         return Err(HttpProcessingError::InvalidHeaderValue(
@@ -280,6 +258,7 @@ pub fn construct_authenticated_query_envelope(
         sender,
         ingress_expiry,
         nonce,
+        include_headers: _,
     } = signature_data.signature_input.clone()
     else {
         return Err(HttpProcessingError::InvalidHeaderValue(

@@ -7,7 +7,6 @@ use crate::protocol::http::{
     canister_request_to_http_request, construct_authenticated_call_envelope,
     construct_authenticated_query_envelope, construct_authenticated_read_state_envelope,
     has_signature_headers, http_request_to_binary, http_request_to_binary_all_headers,
-    parse_include_headers,
 };
 use crate::protocol::signature::Signature;
 use crate::protocol::validate::validate;
@@ -327,35 +326,28 @@ async fn process_authenticated_request(
         }
     };
 
-    // Parse include headers
-    let include_headers = match parse_include_headers(&request) {
-        Ok(headers) => headers,
-        Err(e) => {
-            return create_gateway_error_response(
-                StatusCode::BAD_REQUEST,
-                format!("Failed to parse include headers: {}", e),
-                false,
-                None,
-            );
-        }
-    };
-
-    // Convert filtered HTTP request to binary representation
-    let binary_request = match http_request_to_binary(&request, &include_headers) {
-        Ok(binary) => binary,
-        Err(e) => {
-            return create_gateway_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to convert request to binary: {}", e),
-                false,
-                None,
-            );
-        }
-    };
-
     // Determine call type based on signature variant
     match &signature {
         Signature::Query { query } => {
+            let include_headers = match query.signature_input.include_headers() {
+                Ok(values) => values,
+                Err(e) => {
+                    return create_gateway_error_response(StatusCode::BAD_REQUEST, e, false, None);
+                }
+            };
+
+            let binary_request = match http_request_to_binary(&request, include_headers) {
+                Ok(binary) => binary,
+                Err(e) => {
+                    return create_gateway_error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to convert request to binary: {}", e),
+                        false,
+                        None,
+                    );
+                }
+            };
+
             // Authenticated query: use query envelope and query call
             let envelope_bytes = match construct_authenticated_query_envelope(query, binary_request)
             {
@@ -375,7 +367,7 @@ async fn process_authenticated_request(
                 agent,
                 &request,
                 envelope_bytes,
-                &include_headers,
+                include_headers,
                 skip_verification,
             )
             .await
@@ -383,6 +375,25 @@ async fn process_authenticated_request(
         Signature::Call {
             call, read_state, ..
         } => {
+            let include_headers = match call.signature_input.include_headers() {
+                Ok(values) => values,
+                Err(e) => {
+                    return create_gateway_error_response(StatusCode::BAD_REQUEST, e, false, None);
+                }
+            };
+
+            let binary_request = match http_request_to_binary(&request, include_headers) {
+                Ok(binary) => binary,
+                Err(e) => {
+                    return create_gateway_error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to convert request to binary: {}", e),
+                        false,
+                        None,
+                    );
+                }
+            };
+
             // Authenticated update: use call envelope and update call
             let call_envelope = match construct_authenticated_call_envelope(call, binary_request) {
                 Ok(envelope) => envelope,
@@ -424,7 +435,7 @@ async fn process_authenticated_request(
                 Some(&request),
                 call_envelope,
                 read_state_envelope,
-                Some(&include_headers),
+                Some(include_headers),
                 skip_verification,
             )
             .await

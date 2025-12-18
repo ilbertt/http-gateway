@@ -11,7 +11,11 @@ pub const SIGNATURE_KEY_HEADER_NAME: &str = "signature-key";
 
 const SIGNATURES_SEPARATOR: char = ',';
 const SIGNATURE_INPUTS_SEPARATOR: char = ';';
+const SIGNATURE_INPUT_VALUE_START_DELIMITER: char = '(';
+const SIGNATURE_INPUT_VALUE_END_DELIMITER: char = ')';
+const SIGNATURE_INPUT_PARAMETERS_SEPARATOR: char = ';';
 const SIGNATURE_INPUT_KEY_VALUE_SEPARATOR: char = '=';
+const SIGNATURE_INPUT_INCLUDE_HEADERS_SEPARATOR: char = ',';
 
 /// Errors that can occur during signature parsing
 #[derive(Debug)]
@@ -57,6 +61,7 @@ pub enum SignatureInputData {
         sender: Principal,
         ingress_expiry: u64,
         nonce: Option<Vec<u8>>,
+        include_headers: Vec<String>,
     },
     ReadState {
         ingress_expiry: u64,
@@ -70,6 +75,7 @@ pub enum SignatureInputData {
         sender: Principal,
         ingress_expiry: u64,
         nonce: Option<Vec<u8>>,
+        include_headers: Vec<String>,
     },
 }
 
@@ -80,8 +86,9 @@ impl SignatureInputData {
         let mut sender = None;
         let mut ingress_expiry = None;
         let mut nonce = None;
+        let mut include_headers = None;
 
-        for pair in value.split(SIGNATURE_INPUTS_SEPARATOR) {
+        for pair in value.split(SIGNATURE_INPUT_PARAMETERS_SEPARATOR) {
             let pair = pair.trim();
             if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
                 let key = key.trim();
@@ -133,6 +140,14 @@ impl SignatureInputData {
                                 })?,
                         );
                     }
+                    "include_headers" => {
+                        include_headers = Some(
+                            value
+                                .split(SIGNATURE_INPUT_INCLUDE_HEADERS_SEPARATOR)
+                                .map(|s| s.trim().to_lowercase())
+                                .collect(),
+                        );
+                    }
                     _ => {} // Ignore unknown fields
                 }
             }
@@ -152,6 +167,9 @@ impl SignatureInputData {
                 "ingress_expiry in signature-input",
             ))?,
             nonce,
+            include_headers: include_headers.ok_or(SignatureParseError::MissingHeader(
+                "include_headers in signature-input",
+            ))?,
         };
 
         Ok(signature_input)
@@ -162,7 +180,7 @@ impl SignatureInputData {
         let mut sender = None;
         let mut nonce = None;
 
-        for pair in value.split(SIGNATURE_INPUTS_SEPARATOR) {
+        for pair in value.split(SIGNATURE_INPUT_PARAMETERS_SEPARATOR) {
             let pair = pair.trim();
             if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
                 let key = key.trim();
@@ -229,8 +247,9 @@ impl SignatureInputData {
         let mut sender = None;
         let mut ingress_expiry = None;
         let mut nonce = None;
+        let mut include_headers = None;
 
-        for pair in value.split(SIGNATURE_INPUTS_SEPARATOR) {
+        for pair in value.split(SIGNATURE_INPUT_PARAMETERS_SEPARATOR) {
             let pair = pair.trim();
             if let Some((key, value)) = pair.split_once(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
                 let key = key.trim();
@@ -282,6 +301,14 @@ impl SignatureInputData {
                                 })?,
                         );
                     }
+                    "include_headers" => {
+                        include_headers = Some(
+                            value
+                                .split(SIGNATURE_INPUT_INCLUDE_HEADERS_SEPARATOR)
+                                .map(|s| s.trim().to_lowercase())
+                                .collect(),
+                        );
+                    }
                     _ => {} // Ignore unknown fields
                 }
             }
@@ -301,9 +328,26 @@ impl SignatureInputData {
                 "ingress_expiry in signature-input",
             ))?,
             nonce,
+            include_headers: include_headers.ok_or(SignatureParseError::MissingHeader(
+                "include_headers in signature-input",
+            ))?,
         };
 
         Ok(signature_input)
+    }
+
+    pub fn include_headers(&self) -> Result<&[String], String> {
+        match self {
+            SignatureInputData::Call {
+                include_headers, ..
+            } => Ok(include_headers),
+            SignatureInputData::Query {
+                include_headers, ..
+            } => Ok(include_headers),
+            SignatureInputData::ReadState { .. } => {
+                Err("ReadState does not have include_headers".to_string())
+            }
+        }
     }
 }
 
@@ -397,18 +441,6 @@ impl Signature {
                 "Expected 'sig_call' or 'sig_query'".to_string(),
             ))
         }
-    }
-
-    /// Check if this is a Call signature
-    #[allow(dead_code)]
-    pub fn is_call(&self) -> bool {
-        matches!(self, Signature::Call { .. })
-    }
-
-    /// Check if this is a Query signature
-    #[allow(dead_code)]
-    pub fn is_query(&self) -> bool {
-        matches!(self, Signature::Query { .. })
     }
 }
 
@@ -524,22 +556,30 @@ fn parse_signature_header(
 }
 
 /// Parse all signature inputs from the Signature-Input header
-/// Format: <sig_name>=<key>=<value>;<key>=<value>;...,<sig_name>=<key>=<value>;<key>=<value>;...
+/// Format: <sig_name>=(<key>=<value>;<key>=<value>;...);<sig_name>=(<key>=<value>;<key>=<value>;...);...
 fn parse_signature_input_header(
     header_value: &str,
 ) -> Result<HashMap<String, String>, SignatureParseError> {
     let mut signature_inputs = HashMap::new();
+    let inputs_separator =
+        format!("{SIGNATURE_INPUT_VALUE_END_DELIMITER}{SIGNATURE_INPUTS_SEPARATOR}");
+    let key_value_separator =
+        format!("{SIGNATURE_INPUT_KEY_VALUE_SEPARATOR}{SIGNATURE_INPUT_VALUE_START_DELIMITER}");
+    let key_value_separator_len = key_value_separator.len();
 
-    for entry in header_value.split(SIGNATURES_SEPARATOR) {
+    // Split at ');' which is the end of an input and the start of the next input
+    for entry in header_value.split(&inputs_separator) {
         let entry = entry.trim();
         if entry.is_empty() {
             continue;
         }
 
-        // Find the first '=' to extract sig_name
-        if let Some(eq_pos) = entry.find(SIGNATURE_INPUT_KEY_VALUE_SEPARATOR) {
-            let sig_name = entry[..eq_pos].trim().to_string();
-            let signature_input_value = entry[eq_pos + 1..].to_string();
+        // Find the first '=(' to extract sig_name and its value
+        if let Some(sep_pos) = entry.find(&key_value_separator) {
+            let sig_name = entry[..sep_pos].trim().to_string();
+            let signature_input_value = entry[sep_pos + key_value_separator_len..]
+                .trim_end_matches(SIGNATURE_INPUT_VALUE_END_DELIMITER)
+                .to_string();
 
             signature_inputs.insert(sig_name, signature_input_value);
         } else {
