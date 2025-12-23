@@ -1,5 +1,6 @@
 mod base64;
 mod canister;
+mod delegation;
 mod http;
 mod signature;
 

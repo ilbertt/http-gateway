@@ -3,7 +3,8 @@ use http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::base64::base64_decode;
+use super::base64::{base64_decode, deserialize_base64_string_to_bytes};
+use super::delegation::DelegationChain;
 
 /// Custom header names used in the signature protocol
 pub const SIGNATURE_HEADER_NAME: &str = "signature";
@@ -47,10 +48,15 @@ impl std::fmt::Display for SignatureParseError {
 impl std::error::Error for SignatureParseError {}
 
 /// The signature key structure from the client
-#[derive(Debug, Deserialize, Serialize)]
-struct SignatureKey {
-    #[serde(rename = "pubKey")]
-    pub_key: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SignatureKey {
+    #[serde(
+        rename = "pubKey",
+        deserialize_with = "deserialize_base64_string_to_bytes"
+    )]
+    pub pub_key: Vec<u8>,
+    #[serde(rename = "delegationChain")]
+    pub delegation_chain: Option<DelegationChain>,
 }
 
 /// Parsed signature input data
@@ -323,7 +329,7 @@ impl SignatureInputData {
 #[derive(Debug, Clone)]
 pub struct SignatureData {
     pub sender_sig: Vec<u8>,
-    pub sender_pubkey: Vec<u8>,
+    pub signature_key: SignatureKey,
     pub signature_input: SignatureInputData,
 }
 
@@ -417,7 +423,7 @@ fn build_signature_data(
     sig_name: &str,
     signatures: &HashMap<String, Vec<u8>>,
     signature_inputs: &HashMap<String, String>,
-    signature_keys: &HashMap<String, Vec<u8>>,
+    signature_keys: &HashMap<String, SignatureKey>,
 ) -> Result<SignatureData, SignatureParseError> {
     let sender_sig = signatures
         .get(sig_name)
@@ -450,7 +456,7 @@ fn build_signature_data(
         }
     };
 
-    let sender_pubkey = signature_keys
+    let signature_key = signature_keys
         .get(sig_name)
         .ok_or_else(|| {
             SignatureParseError::MissingRequiredSignature(format!(
@@ -462,7 +468,7 @@ fn build_signature_data(
 
     Ok(SignatureData {
         sender_sig,
-        sender_pubkey,
+        signature_key,
         signature_input,
     })
 }
@@ -567,10 +573,10 @@ fn parse_signature_input_header(
 }
 
 /// Parse all signature keys from the Signature-Key header
-/// Format: <sig_name>=:<base64({ pubKey: <base64_bytes> })>:,<sig_name>=:<base64({ pubKey: <base64_bytes> })>:,...
+/// Format: <sig_name>=:<base64({ pubKey: <base64_bytes>, delegationChain: ... })>:,<sig_name>=:<base64({ pubKey: <base64_bytes>, delegationChain: ... })>:,...
 fn parse_signature_key_header(
     header_value: &str,
-) -> Result<HashMap<String, Vec<u8>>, SignatureParseError> {
+) -> Result<HashMap<String, SignatureKey>, SignatureParseError> {
     let mut signature_keys = HashMap::new();
 
     for entry in header_value.split(SIGNATURES_SEPARATOR) {
@@ -598,10 +604,7 @@ fn parse_signature_key_header(
             let signature_key: SignatureKey = serde_json::from_slice(&signature_key_json)
                 .map_err(|e| SignatureParseError::JsonParseError(e.to_string()))?;
 
-            let sender_pubkey = base64_decode(&signature_key.pub_key)
-                .map_err(|e| SignatureParseError::Base64DecodeError(e.to_string()))?;
-
-            signature_keys.insert(sig_name, sender_pubkey);
+            signature_keys.insert(sig_name, signature_key);
         } else {
             return Err(SignatureParseError::InvalidHeaderValue(format!(
                 "Invalid signature-key entry format, expected '<sig_name>=:<value>:', got: {}",

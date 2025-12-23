@@ -196,13 +196,7 @@ pub fn construct_authenticated_call_envelope(
         arg: binary_request,
     };
 
-    // Create the Envelope with signature
-    let envelope = Envelope {
-        content: Cow::Owned(content),
-        sender_pubkey: Some(signature_data.sender_pubkey.clone()),
-        sender_sig: Some(signature_data.sender_sig.clone()),
-        sender_delegation: None, // TODO: Support delegation chains from Internet Identity
-    };
+    let envelope = to_authenticated_envelope(signature_data, content);
 
     Ok(envelope)
 }
@@ -235,14 +229,7 @@ pub fn construct_authenticated_read_state_envelope(
         paths,
     };
 
-    // Create the Envelope with signature
-    let envelope = Envelope {
-        content: Cow::Owned(content),
-        sender_pubkey: Some(signature_data.sender_pubkey.clone()),
-        sender_sig: Some(signature_data.sender_sig.clone()),
-        sender_delegation: None, // TODO: Support delegation chains from Internet Identity
-    };
-
+    let envelope = to_authenticated_envelope(signature_data, content);
     Ok(envelope)
 }
 
@@ -276,14 +263,7 @@ pub fn construct_authenticated_query_envelope(
         arg: binary_request,
     };
 
-    // Create the Envelope with signature
-    let envelope = Envelope {
-        content: Cow::Owned(content),
-        sender_pubkey: Some(signature_data.sender_pubkey.clone()),
-        sender_sig: Some(signature_data.sender_sig.clone()),
-        sender_delegation: None, // TODO: Support delegation chains from Internet Identity
-    };
-
+    let envelope = to_authenticated_envelope(signature_data, content);
     Ok(envelope)
 }
 
@@ -377,4 +357,31 @@ pub fn binary_to_certification_http_response(
         .with_headers(headers)
         .with_body(message.content().to_vec())
         .build())
+}
+
+fn to_authenticated_envelope(
+    signature_data: &'_ SignatureData,
+    content: EnvelopeContent,
+) -> Envelope<'_> {
+    let sender_delegation =
+        signature_data
+            .signature_key
+            .delegation_chain
+            .clone()
+            .map(|delegation_chain| {
+                delegation_chain
+                    .delegations
+                    .into_iter()
+                    .map(|delegation| delegation.into())
+                    .collect()
+            });
+
+    let envelope = Envelope {
+        content: Cow::Owned(content),
+        sender_pubkey: Some(signature_data.signature_key.pub_key.clone()),
+        sender_sig: Some(signature_data.sender_sig.clone()),
+        sender_delegation,
+    };
+
+    envelope
 }
