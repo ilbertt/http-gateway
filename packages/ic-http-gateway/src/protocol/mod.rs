@@ -1,3 +1,4 @@
+mod base64;
 mod canister;
 mod http;
 mod signature;

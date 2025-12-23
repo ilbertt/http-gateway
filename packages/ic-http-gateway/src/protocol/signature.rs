@@ -1,8 +1,9 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64, Engine};
 use candid::Principal;
 use http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use super::base64::base64_decode;
 
 /// Custom header names used in the signature protocol
 pub const SIGNATURE_HEADER_NAME: &str = "signature";
@@ -124,21 +125,10 @@ impl SignatureInputData {
                             })?);
                     }
                     "nonce" => {
-                        nonce = Some(
-                            BASE64
-                                .decode(value)
-                                .or_else(|_| {
-                                    value
-                                        .parse::<u64>()
-                                        .map(|n| n.to_be_bytes().to_vec())
-                                        .map_err(|_| {
-                                            base64::DecodeError::InvalidLength(value.len())
-                                        })
-                                })
-                                .map_err(|e| {
-                                    SignatureParseError::Base64DecodeError(e.to_string())
-                                })?,
-                        );
+                        nonce =
+                            Some(base64_decode(value).map_err(|e| {
+                                SignatureParseError::Base64DecodeError(e.to_string())
+                            })?);
                     }
                     "include_headers" => {
                         include_headers = Some(
@@ -207,21 +197,10 @@ impl SignatureInputData {
                             })?);
                     }
                     "nonce" => {
-                        nonce = Some(
-                            BASE64
-                                .decode(value)
-                                .or_else(|_| {
-                                    value
-                                        .parse::<u64>()
-                                        .map(|n| n.to_be_bytes().to_vec())
-                                        .map_err(|_| {
-                                            base64::DecodeError::InvalidLength(value.len())
-                                        })
-                                })
-                                .map_err(|e| {
-                                    SignatureParseError::Base64DecodeError(e.to_string())
-                                })?,
-                        );
+                        nonce =
+                            Some(base64_decode(value).map_err(|e| {
+                                SignatureParseError::Base64DecodeError(e.to_string())
+                            })?);
                     }
                     _ => {} // Ignore unknown fields
                 }
@@ -285,21 +264,10 @@ impl SignatureInputData {
                             })?);
                     }
                     "nonce" => {
-                        nonce = Some(
-                            BASE64
-                                .decode(value)
-                                .or_else(|_| {
-                                    value
-                                        .parse::<u64>()
-                                        .map(|n| n.to_be_bytes().to_vec())
-                                        .map_err(|_| {
-                                            base64::DecodeError::InvalidLength(value.len())
-                                        })
-                                })
-                                .map_err(|e| {
-                                    SignatureParseError::Base64DecodeError(e.to_string())
-                                })?,
-                        );
+                        nonce =
+                            Some(base64_decode(value).map_err(|e| {
+                                SignatureParseError::Base64DecodeError(e.to_string())
+                            })?);
                     }
                     "include_headers" => {
                         include_headers = Some(
@@ -533,8 +501,7 @@ fn parse_signature_header(
                 ))
             })?;
 
-            let decoded = BASE64
-                .decode(value)
+            let decoded = base64_decode(value)
                 .map_err(|e| SignatureParseError::Base64DecodeError(e.to_string()))?;
 
             signatures.insert(sig_name, decoded);
@@ -625,15 +592,13 @@ fn parse_signature_key_header(
                 ))
             })?;
 
-            let signature_key_json = BASE64
-                .decode(value)
+            let signature_key_json = base64_decode(value)
                 .map_err(|e| SignatureParseError::Base64DecodeError(e.to_string()))?;
 
             let signature_key: SignatureKey = serde_json::from_slice(&signature_key_json)
                 .map_err(|e| SignatureParseError::JsonParseError(e.to_string()))?;
 
-            let sender_pubkey = BASE64
-                .decode(&signature_key.pub_key)
+            let sender_pubkey = base64_decode(&signature_key.pub_key)
                 .map_err(|e| SignatureParseError::Base64DecodeError(e.to_string()))?;
 
             signature_keys.insert(sig_name, sender_pubkey);
